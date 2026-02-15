@@ -109,13 +109,18 @@ bike_data/
 - [x] `spark/Dockerfile` — `bitnami/spark:3.5`, pre-downloads all required JARs at build time
 - [x] `spark/start.sh` — entrypoint that calls `spark-submit --master local[2]`
 
-### Phase 5 — End-to-End Test
+### Phase 5 — End-to-End Test ✅
 
-- [ ] `docker compose up --build`
-- [ ] Verify producer logs show successful publishes
-- [ ] Verify Spark logs show micro-batch processing
-- [ ] Query MySQL: `SELECT COUNT(*), MAX(ingested_at) FROM station_information;`
-- [ ] Wait 2+ minutes, confirm new rows are being inserted
+- [x] `docker compose up --build`
+- [x] Producer logs: "Published 2354 stations → topic 'gbfs-stations'" every 60 s
+- [x] Spark logs: streaming query started, micro-batches processing
+- [x] MySQL: 4,708 rows after 2 poll cycles, `MAX(ingested_at)` advancing
+- [x] Pipeline confirmed working end-to-end
+
+**Image notes (resolved during Phase 5):**
+- `bitnami/kafka` and `bitnami/spark` unavailable on Docker Hub/GHCR → switched to
+  `apache/kafka:3.9.0` (official) and `python:3.11-slim` + `pyspark==3.5.0` via pip
+- Kafka healthcheck must use full path `/opt/kafka/bin/kafka-topics.sh` (not in `/bin/sh` PATH)
 
 ### Phase 6 — Expand to Citi Bike Full Feed (Future)
 
@@ -132,7 +137,9 @@ bike_data/
 
 | Decision | Choice | Reason |
 |---|---|---|
+| Kafka image | `apache/kafka:3.9.0` | Official image; bitnami unavailable on Docker Hub |
 | Kafka mode | KRaft (no Zookeeper) | Saves ~256MB RAM, simpler setup |
+| Spark image | `python:3.11-slim` + JRE + `pyspark==3.5.0` pip | Simpler than apache/spark; no entrypoint conflicts |
 | Message granularity | One Kafka message per station | Better parallelism, cleaner offsets |
 | Spark mode | Local (`local[2]`) | Single machine, no cluster overhead |
 | Spark sink | `foreachBatch` → JDBC | Simplest reliable write to MySQL |
