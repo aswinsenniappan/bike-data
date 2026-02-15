@@ -1,16 +1,18 @@
-FROM bitnami/spark:3.5
-
-USER root
+FROM python:3.11-slim
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl && \
+    apt-get install -y --no-install-recommends \
+        default-jre-headless \
+        curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Download Kafka connector JARs and MySQL JDBC driver directly into Spark's
-# jars directory so no --packages flag or runtime network access is needed.
-RUN set -e && \
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Resolve pyspark's bundled jars directory and drop in the extra JARs needed
+# for Kafka Structured Streaming and MySQL JDBC.
+RUN JARS=$(python3 -c "import pyspark, os; print(os.path.join(os.path.dirname(pyspark.__file__), 'jars'))") && \
     BASE=https://repo1.maven.org/maven2 && \
-    JARS=/opt/bitnami/spark/jars && \
     curl -fsSL "$BASE/org/apache/spark/spark-sql-kafka-0-10_2.12/3.5.0/spark-sql-kafka-0-10_2.12-3.5.0.jar" \
          -o "$JARS/spark-sql-kafka-0-10_2.12-3.5.0.jar" && \
     curl -fsSL "$BASE/org/apache/spark/spark-token-provider-kafka-0-10_2.12/3.5.0/spark-token-provider-kafka-0-10_2.12-3.5.0.jar" \
@@ -24,13 +26,8 @@ RUN set -e && \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
 COPY consumer.py start.sh ./
 RUN chmod +x start.sh
 
 # config/ is mounted at /config at runtime via docker-compose volume
-USER 1001
-
 ENTRYPOINT ["/app/start.sh"]

@@ -1,1 +1,2 @@
+pyspark==3.5.0
 pyyaml==6.0.1
