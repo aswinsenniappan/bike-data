@@ -4,8 +4,10 @@ import yaml
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, current_timestamp, from_json
 from pyspark.sql.types import (
+    BooleanType,
     DoubleType,
     IntegerType,
+    LongType,
     StringType,
     StructField,
     StructType,
@@ -36,17 +38,48 @@ def load_config() -> dict:
     return cfg
 
 
+# ── Schemas ────────────────────────────────────────────────────────────────────
+# One StructType per feed name. Only fields that get dedicated SQL columns are
+# listed here; the full payload is always captured in raw_json separately.
+
+STATION_INFORMATION_SCHEMA = StructType([
+    StructField("station_id", StringType(),  nullable=True),
+    StructField("name",       StringType(),  nullable=True),
+    StructField("lat",        DoubleType(),  nullable=True),
+    StructField("lon",        DoubleType(),  nullable=True),
+    StructField("capacity",   IntegerType(), nullable=True),
+    StructField("region_id",  StringType(),  nullable=True),
+])
+
+STATION_STATUS_SCHEMA = StructType([
+    StructField("station_id",          StringType(),  nullable=True),
+    StructField("num_bikes_available", IntegerType(), nullable=True),
+    StructField("num_bikes_disabled",  IntegerType(), nullable=True),
+    StructField("num_docks_available", IntegerType(), nullable=True),
+    StructField("num_docks_disabled",  IntegerType(), nullable=True),
+    StructField("is_installed",        BooleanType(), nullable=True),
+    StructField("is_renting",          BooleanType(), nullable=True),
+    StructField("is_returning",        BooleanType(), nullable=True),
+    StructField("last_reported",       LongType(),    nullable=True),
+])
+
+FEED_SCHEMAS = {
+    "station_information": STATION_INFORMATION_SCHEMA,
+    "station_status":      STATION_STATUS_SCHEMA,
+}
+
+# ── Bootstrap ──────────────────────────────────────────────────────────────────
+
 cfg = load_config()
 
-kafka_broker    = cfg["kafka"]["broker"]
-kafka_topic     = cfg["kafka"]["topic"]
-mysql_host      = cfg["mysql"]["host"]
-mysql_port      = cfg["mysql"]["port"]
-mysql_database  = cfg["mysql"]["database"]
-mysql_user      = cfg["mysql"]["user"]
-mysql_password  = cfg["mysql"]["password"]
-checkpoint_dir  = cfg["spark"]["checkpoint_dir"]
-trigger_secs    = cfg["spark"]["trigger_interval_seconds"]
+kafka_broker   = cfg["kafka"]["broker"]
+mysql_host     = cfg["mysql"]["host"]
+mysql_port     = cfg["mysql"]["port"]
+mysql_database = cfg["mysql"]["database"]
+mysql_user     = cfg["mysql"]["user"]
+mysql_password = cfg["mysql"]["password"]
+checkpoint_dir = cfg["spark"]["checkpoint_dir"]
+trigger_secs   = cfg["spark"]["trigger_interval_seconds"]
 
 JDBC_URL = (
     f"jdbc:mysql://{mysql_host}:{mysql_port}/{mysql_database}"
@@ -59,69 +92,62 @@ JDBC_PROPS = {
     "driver":   "com.mysql.cj.jdbc.Driver",
 }
 
-# Named columns written to dedicated SQL columns;
-# the full original payload is also preserved in raw_json.
-STATION_SCHEMA = StructType([
-    StructField("station_id", StringType(),  nullable=True),
-    StructField("name",       StringType(),  nullable=True),
-    StructField("lat",        DoubleType(),  nullable=True),
-    StructField("lon",        DoubleType(),  nullable=True),
-    StructField("capacity",   IntegerType(), nullable=True),
-    StructField("region_id",  StringType(),  nullable=True),
-])
-
-
-def write_batch(batch_df, epoch_id):
-    batch_df.write.jdbc(
-        url=JDBC_URL,
-        table="station_information",
-        mode="append",
-        properties=JDBC_PROPS,
-    )
-
-
 spark = (
     SparkSession.builder
-    .appName("GBFSStationConsumer")
+    .appName("GBFSConsumer")
     .config("spark.ui.enabled", "false")
     .config("spark.driver.memory", cfg["spark"]["driver_memory"])
     .getOrCreate()
 )
 spark.sparkContext.setLogLevel("WARN")
 
-raw = (
-    spark.readStream
-    .format("kafka")
-    .option("kafka.bootstrap.servers", kafka_broker)
-    .option("subscribe", kafka_topic)
-    .option("startingOffsets", "latest")
-    .option("failOnDataLoss", "false")
-    .load()
-)
 
-parsed = (
-    raw.select(
-        col("value").cast("string").alias("raw_json"),
-        from_json(col("value").cast("string"), STATION_SCHEMA).alias("s"),
+# ── Query builder ──────────────────────────────────────────────────────────────
+
+def build_query(feed: dict):
+    """Build and start one Structured Streaming query for a single feed."""
+    name   = feed["name"]
+    topic  = feed["topic"]
+    table  = feed["table"]
+    schema = FEED_SCHEMAS[name]
+
+    raw = (
+        spark.readStream
+        .format("kafka")
+        .option("kafka.bootstrap.servers", kafka_broker)
+        .option("subscribe", topic)
+        .option("startingOffsets", "latest")
+        .option("failOnDataLoss", "false")
+        .load()
     )
-    .select(
-        col("s.station_id"),
-        col("s.name"),
-        col("s.lat"),
-        col("s.lon"),
-        col("s.capacity"),
-        col("s.region_id"),
-        col("raw_json"),
-        current_timestamp().alias("ingested_at"),
+
+    parsed = (
+        raw.select(
+            col("value").cast("string").alias("raw_json"),
+            from_json(col("value").cast("string"), schema).alias("s"),
+        )
+        .select(col("s.*"), col("raw_json"), current_timestamp().alias("ingested_at"))
     )
-)
 
-query = (
-    parsed.writeStream
-    .foreachBatch(write_batch)
-    .option("checkpointLocation", checkpoint_dir)
-    .trigger(processingTime=f"{trigger_secs} seconds")
-    .start()
-)
+    def write_batch(batch_df, epoch_id):
+        batch_df.write.jdbc(
+            url=JDBC_URL,
+            table=table,
+            mode="append",
+            properties=JDBC_PROPS,
+        )
 
-query.awaitTermination()
+    return (
+        parsed.writeStream
+        .foreachBatch(write_batch)
+        .option("checkpointLocation", f"{checkpoint_dir}/{name}")
+        .trigger(processingTime=f"{trigger_secs} seconds")
+        .start()
+    )
+
+
+# ── Start all queries ──────────────────────────────────────────────────────────
+
+queries = [build_query(feed) for feed in cfg["feeds"]]
+
+spark.streams.awaitAnyTermination()

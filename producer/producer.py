@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 
@@ -64,30 +65,47 @@ def fetch_stations(url: str) -> list:
     return response.json()["data"]["stations"]
 
 
-def main() -> None:
-    cfg = load_config()
+def poll_feed(producer: KafkaProducer, feed: dict) -> None:
+    """Poll one GBFS feed forever. Runs in its own daemon thread."""
+    name     = feed["name"]
+    url      = feed["url"]
+    topic    = feed["topic"]
+    interval = feed["poll_interval_seconds"]
 
-    kafka_broker    = cfg["kafka"]["broker"]
-    kafka_topic     = cfg["kafka"]["topic"]
-    gbfs_url        = cfg["gbfs"]["url"]
-    poll_interval   = cfg["gbfs"]["poll_interval_seconds"]
-
-    producer = make_producer(kafka_broker)
-    log.info("Polling %s every %d s", gbfs_url, poll_interval)
-
+    log.info("[%s] Starting — every %d s → topic '%s'", name, interval, topic)
     while True:
         try:
-            stations = fetch_stations(gbfs_url)
+            stations = fetch_stations(url)
             for station in stations:
-                producer.send(kafka_topic, key=station["station_id"], value=station)
+                producer.send(topic, key=station["station_id"], value=station)
             producer.flush()
-            log.info("Published %d stations → topic '%s'", len(stations), kafka_topic)
+            log.info("[%s] Published %d records → topic '%s'", name, len(stations), topic)
         except requests.RequestException as exc:
-            log.error("HTTP error fetching GBFS feed: %s", exc)
+            log.error("[%s] HTTP error fetching feed: %s", name, exc)
         except Exception as exc:
-            log.error("Unexpected error in poll cycle: %s", exc)
+            log.error("[%s] Unexpected error in poll cycle: %s", name, exc)
 
-        time.sleep(poll_interval)
+        time.sleep(interval)
+
+
+def main() -> None:
+    cfg          = load_config()
+    kafka_broker = cfg["kafka"]["broker"]
+    producer     = make_producer(kafka_broker)
+
+    threads = [
+        threading.Thread(
+            target=poll_feed,
+            args=(producer, feed),
+            name=f"poller-{feed['name']}",
+            daemon=True,
+        )
+        for feed in cfg["feeds"]
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
 
 
 if __name__ == "__main__":
