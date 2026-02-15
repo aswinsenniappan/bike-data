@@ -1,6 +1,9 @@
 # Environment — never commit real credentials
 .env
 
+# Config secrets — copy secrets.yaml.example → secrets.yaml and fill in values
+config/secrets.yaml
+
 # Python
 __pycache__/
 *.pyc

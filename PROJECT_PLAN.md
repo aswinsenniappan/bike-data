@@ -57,8 +57,14 @@ Well within 16GB RAM and 50GB SSD constraints.
 ```
 bike_data/
 ├── docker-compose.yml
-├── .env                          # Environment variables (ports, credentials)
+├── .env                          # Docker infra credentials (gitignored)
+├── .env.example                  # Template for .env
 ├── PROJECT_PLAN.md               # This file
+│
+├── config/
+│   ├── config.yaml               # Non-sensitive settings (committed)
+│   ├── secrets.yaml              # Passwords (gitignored)
+│   └── secrets.yaml.example      # Template for secrets.yaml
 │
 ├── producer/
 │   ├── Dockerfile
@@ -68,6 +74,7 @@ bike_data/
 ├── spark/
 │   ├── Dockerfile
 │   ├── requirements.txt
+│   ├── start.sh                  # spark-submit entrypoint
 │   └── consumer.py               # PySpark structured streaming job
 │
 └── mysql/
@@ -78,53 +85,29 @@ bike_data/
 
 ## Milestones
 
-### Phase 1 — Infrastructure (Docker Compose)
+### Phase 1 — Infrastructure (Docker Compose) ✅
 
-- [ ] Write `docker-compose.yml` with:
-  - Kafka in KRaft mode (no Zookeeper, saves RAM)
-  - MySQL 8 with a named volume
-  - Producer service
-  - Spark service
-  - A shared Docker bridge network
-- [ ] Write `.env` for all configurable values (ports, credentials, topic name)
-- [ ] Verify all containers start cleanly with `docker compose up`
+- [x] Write `docker-compose.yml` with Kafka (KRaft), MySQL 8, producer, spark, shared network
+- [x] Write `config/config.yaml` (settings) and `config/secrets.yaml` (credentials, gitignored)
+- [x] Placeholder Dockerfiles for producer and spark
 
-### Phase 2 — MySQL Schema
+### Phase 2 — MySQL Schema ✅
 
-- [ ] Write `mysql/init.sql` to create the `bike_data` database and
-  `station_information` table:
-  - `id` BIGINT AUTO_INCREMENT PK
-  - `station_id` VARCHAR — unique station identifier from feed
-  - `name` VARCHAR
-  - `lat` DOUBLE
-  - `lon` DOUBLE
-  - `capacity` INT
-  - `region_id` VARCHAR (nullable)
-  - `raw_json` JSON — full station record for forward compatibility
-  - `ingested_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+- [x] Write `mysql/init.sql` — `station_information` table with all required columns
 
-### Phase 3 — Python Kafka Producer
+### Phase 3 — Python Kafka Producer ✅
 
-- [ ] Write `producer/producer.py`:
-  - Uses `requests` to fetch GBFS station_information JSON every 60s
-  - Iterates each station record in `data.stations[]`
-  - Publishes each station as a separate Kafka message (key = `station_id`)
-  - Serialises payload as JSON string
-- [ ] Write `producer/Dockerfile` based on `python:3.11-slim`
-- [ ] Dependencies: `requests`, `kafka-python`
-- [ ] Add basic error handling: log fetch failures, retry next cycle
+- [x] `producer/producer.py` — loads config from `/config`, polls GBFS every 60 s,
+  publishes each station as a Kafka message keyed by `station_id`
+- [x] `producer/Dockerfile` — `python:3.11-slim`, pip installs `requests`, `kafka-python`, `pyyaml`
+- [x] Startup retry loop for Kafka not-yet-ready condition
 
-### Phase 4 — PySpark Consumer
+### Phase 4 — PySpark Consumer ✅
 
-- [ ] Write `spark/consumer.py`:
-  - Uses PySpark Structured Streaming with Kafka source
-  - Reads from topic `gbfs-stations`
-  - Defines schema matching the GBFS station_information record
-  - Parses Kafka value (JSON string) into structured columns
-  - Writes micro-batches to MySQL via JDBC (`foreachBatch` sink)
-- [ ] Write `spark/Dockerfile` based on `bitnami/spark:3.5`
-- [ ] Dependencies: `pyspark`, MySQL JDBC connector JAR
-- [ ] Checkpoint location: `/tmp/spark-checkpoint` (inside container)
+- [x] `spark/consumer.py` — loads config from `/config`, Structured Streaming from Kafka,
+  `foreachBatch` → JDBC → MySQL
+- [x] `spark/Dockerfile` — `bitnami/spark:3.5`, pre-downloads all required JARs at build time
+- [x] `spark/start.sh` — entrypoint that calls `spark-submit --master local[2]`
 
 ### Phase 5 — End-to-End Test
 

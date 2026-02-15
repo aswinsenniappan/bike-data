@@ -66,7 +66,8 @@ services:
   producer:
     build: ./producer
     container_name: producer
-    env_file: .env
+    volumes:
+      - ./config:/config:ro
     depends_on:
       kafka:
         condition: service_healthy
@@ -80,14 +81,14 @@ services:
   spark:
     build: ./spark
     container_name: spark
-    env_file: .env
+    volumes:
+      - ./config:/config:ro
+      - spark_checkpoint:/tmp/spark-checkpoint
     depends_on:
       kafka:
         condition: service_healthy
       mysql:
         condition: service_healthy
-    volumes:
-      - spark_checkpoint:/tmp/spark-checkpoint
     networks:
       - bike_net
     restart: on-failure
