@@ -80,7 +80,7 @@ services:
         condition: service_healthy
     networks:
       - bike_net
-    restart: on-failure
+    restart: unless-stopped
 
   # ──────────────────────────────────────────────
   # PySpark Consumer  (Phase 4)
