@@ -1,0 +1,108 @@
+services:
+
+  # ──────────────────────────────────────────────
+  # Kafka in KRaft mode (no Zookeeper)
+  # ──────────────────────────────────────────────
+  kafka:
+    image: bitnami/kafka:3.7
+    container_name: kafka
+    environment:
+      # KRaft identity
+      - KAFKA_CFG_NODE_ID=1
+      - KAFKA_CFG_PROCESS_ROLES=broker,controller
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      # Listeners:
+      #   PLAINTEXT  — inter-container traffic (producer, spark)
+      #   CONTROLLER — KRaft internal
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      # Retention & topic defaults
+      - KAFKA_CFG_LOG_RETENTION_HOURS=24
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+      - KAFKA_CFG_NUM_PARTITIONS=1
+      - KAFKA_CFG_DEFAULT_REPLICATION_FACTOR=1
+      # Heap — keep small for single-broker local setup
+      - KAFKA_HEAP_OPTS=-Xms256m -Xmx512m
+    volumes:
+      - kafka_data:/bitnami/kafka
+    networks:
+      - bike_net
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ──────────────────────────────────────────────
+  # MySQL 8
+  # ──────────────────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - bike_net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ──────────────────────────────────────────────
+  # Python Kafka Producer  (Phase 3)
+  # ──────────────────────────────────────────────
+  producer:
+    build: ./producer
+    container_name: producer
+    env_file: .env
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - bike_net
+    restart: on-failure
+
+  # ──────────────────────────────────────────────
+  # PySpark Consumer  (Phase 4)
+  # ──────────────────────────────────────────────
+  spark:
+    build: ./spark
+    container_name: spark
+    env_file: .env
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    volumes:
+      - spark_checkpoint:/tmp/spark-checkpoint
+    networks:
+      - bike_net
+    restart: on-failure
+
+# ──────────────────────────────────────────────
+# Named volumes
+# ──────────────────────────────────────────────
+volumes:
+  kafka_data:
+  mysql_data:
+  spark_checkpoint:
+
+# ──────────────────────────────────────────────
+# Network
+# ──────────────────────────────────────────────
+networks:
+  bike_net:
+    driver: bridge
